@@ -16,6 +16,10 @@ jobs:
           echo "Using $Z"
           unzip -o -q "$Z"
           if [ ! -f neo_app/lib/neo/neo_face.dart ]; then echo "This zip is the OLD Neo app. Upload the new one."; exit 1; fi
+      - name: Fix record plugin version
+        run: |
+          sed -i 's/^  record: .*/  record: ^6.0.0/' neo_app/pubspec.yaml
+          grep "record:" neo_app/pubspec.yaml
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
