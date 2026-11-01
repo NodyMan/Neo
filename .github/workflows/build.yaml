@@ -9,17 +9,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Find app code
+      - name: Pick the newest Neo zip
         run: |
-          Z=$(ls -t *.zip 2>/dev/null | head -1)
-          if [ -z "$Z" ]; then echo "No zip file found in the repo"; exit 1; fi
-          echo "Using $Z"
-          unzip -o -q "$Z"
-          if [ ! -f neo_app/lib/neo/neo_face.dart ]; then echo "This zip is the OLD Neo app. Upload the new one."; exit 1; fi
-      - name: Fix record plugin version
-        run: |
-          sed -i 's/^  record: .*/  record: ^6.0.0/' neo_app/pubspec.yaml
-          grep "record:" neo_app/pubspec.yaml
+          best=""; bestv="0"
+          for z in *.zip; do
+            [ -f "$z" ] || continue
+            v=$(unzip -p "$z" neo_app/pubspec.yaml 2>/dev/null | sed -n 's/^version: *//p' | head -1)
+            echo "Found: $z -> version ${v:-none}"
+            [ -z "$v" ] && continue
+            top=$(printf '%s\n%s\n' "$bestv" "$v" | sort -V | tail -1)
+            if [ "$top" = "$v" ] && [ "$v" != "$bestv" ]; then best="$z"; bestv="$v"; fi
+          done
+          if [ -z "$best" ]; then echo "No Neo zip found in the repo"; exit 1; fi
+          echo "Using $best (Neo version $bestv)"
+          rm -rf neo_app
+          unzip -o -q "$best"
+          echo "NEO_VERSION=$bestv" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -36,5 +41,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Neo app build ${{ github.run_number }}
+          name: Neo ${{ env.NEO_VERSION }} (build ${{ github.run_number }})
           files: neo_app/build/app/outputs/flutter-apk/app-release.apk
