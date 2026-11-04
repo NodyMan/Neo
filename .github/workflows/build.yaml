@@ -43,6 +43,7 @@ jobs:
         working-directory: neo_app
         run: |
           bash tool/prepare_android.sh
+          rm -rf test
           flutter pub get
           flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Build APK
