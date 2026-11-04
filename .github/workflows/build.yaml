@@ -10,6 +10,10 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
+    env:
+      # Neo's permanent signing key (repo Settings → Secrets → Actions). With it, every new APK
+      # installs over the old one. Without it the build falls back to a throwaway debug key.
+      HAS_KEY: ${{ secrets.NEO_KEYSTORE_B64 != '' }}
     outputs:
       version: ${{ steps.pick.outputs.version }}
     steps:
@@ -46,9 +50,40 @@ jobs:
           rm -rf test
           flutter pub get
           flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Use Neo's permanent signing key
+        if: env.HAS_KEY == 'true'
+        working-directory: neo_app
+        env:
+          NEO_KEYSTORE_B64: ${{ secrets.NEO_KEYSTORE_B64 }}
+        run: |
+          echo "$NEO_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/neo-release.jks"
+          echo "NEO_KEYSTORE_PATH=$RUNNER_TEMP/neo-release.jks" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          p = 'android/app/build.gradle.kts'
+          s = open(p).read()
+          if 'create("release")' not in s:
+              s = s.replace('    buildTypes {', """    signingConfigs {
+                  create("release") {
+                      storeFile = file(System.getenv("NEO_KEYSTORE_PATH"))
+                      storePassword = System.getenv("NEO_KEYSTORE_PASSWORD")
+                      keyAlias = System.getenv("NEO_KEY_ALIAS")
+                      keyPassword = System.getenv("NEO_KEY_PASSWORD")
+                  }
+              }
+              buildTypes {""", 1)
+              s = s.replace('signingConfig = signingConfigs.getByName("debug")', 'signingConfig = signingConfigs.getByName("release")')
+          assert 'getByName("release")' in s, "could not switch the release build to Neo's signing key"
+          open(p, 'w').write(s)
+          PY
       - name: Build APK
         working-directory: neo_app
-        run: flutter build apk --release
+        env:
+          NEO_KEYSTORE_PASSWORD: ${{ secrets.NEO_KEYSTORE_PASSWORD }}
+          NEO_KEY_ALIAS: ${{ secrets.NEO_KEY_ALIAS }}
+          NEO_KEY_PASSWORD: ${{ secrets.NEO_KEY_PASSWORD }}
+        run: |
+          flutter build apk --release
+          "$(ls -d "$ANDROID_HOME"/build-tools/*/ | tail -1)apksigner" verify --print-certs build/app/outputs/flutter-apk/app-release.apk | grep -E "DN:|SHA-256"
       - uses: actions/upload-artifact@v4
         with:
           name: neo-android
