@@ -1,20 +1,27 @@
-name: Build Neo APK
+name: Build Neo (Android + Windows)
 on:
   push:
   workflow_dispatch:
 permissions:
   contents: write
+
+# Picks the newest Neo zip in the repo (by app version), builds the phone APK and the laptop app.
+# Pushes to main publish a Release; other branches keep the builds as workflow artifacts only.
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Pick the newest Neo zip
+        id: pick
+        shell: bash
         run: |
           best=""; bestv="0"
           for z in *.zip; do
             [ -f "$z" ] || continue
-            v=$(unzip -p "$z" neo_app/pubspec.yaml 2>/dev/null | sed -n 's/^version: *//p' | head -1)
+            v=$(unzip -p "$z" neo_app/pubspec.yaml 2>/dev/null | sed -n 's/^version: *//p' | head -1 | tr -d '\r')
             echo "Found: $z -> version ${v:-none}"
             [ -z "$v" ] && continue
             top=$(printf '%s\n%s\n' "$bestv" "$v" | sort -V | tail -1)
@@ -24,7 +31,7 @@ jobs:
           echo "Using $best (Neo version $bestv)"
           rm -rf neo_app
           unzip -o -q "$best"
-          echo "NEO_VERSION=$bestv" >> "$GITHUB_ENV"
+          echo "version=$bestv" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -32,14 +39,60 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Build APK
+      - name: Check the code
         working-directory: neo_app
         run: |
           bash tool/prepare_android.sh
           flutter pub get
-          flutter build apk --release
-      - uses: softprops/action-gh-release@v2
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Build APK
+        working-directory: neo_app
+        run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neo-android
+          path: neo_app/build/app/outputs/flutter-apk/app-release.apk
+      - if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Neo ${{ env.NEO_VERSION }} (build ${{ github.run_number }})
+          name: Neo ${{ steps.pick.outputs.version }} (build ${{ github.run_number }})
           files: neo_app/build/app/outputs/flutter-apk/app-release.apk
+
+  windows:
+    needs: android
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack the same Neo zip
+        shell: bash
+        run: |
+          want="${{ needs.android.outputs.version }}"
+          for z in *.zip; do
+            v=$(unzip -p "$z" neo_app/pubspec.yaml 2>/dev/null | sed -n 's/^version: *//p' | head -1 | tr -d '\r')
+            if [ "$v" = "$want" ]; then rm -rf neo_app; unzip -o -q "$z"; echo "Using $z"; break; fi
+          done
+          test -d neo_app
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Build Windows app
+        working-directory: neo_app
+        shell: bash
+        run: |
+          bash tool/prepare_windows.sh
+          flutter pub get
+          flutter build windows --release
+      - name: Zip it
+        shell: pwsh
+        run: Compress-Archive -Path neo_app/build/windows/x64/runner/Release/* -DestinationPath Neo-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neo-windows
+          path: Neo-Windows.zip
+      - if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Neo ${{ needs.android.outputs.version }} (build ${{ github.run_number }})
+          files: Neo-Windows.zip
